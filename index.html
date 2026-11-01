@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="color-scheme" content="light">
+<!-- Ask search engines, image search and AI scrapers to skip this page (polite bots obey; it is not a lock) -->
+<meta name="robots" content="noindex, nofollow, noarchive, noimageindex, noai, noimageai">
+<meta name="googlebot" content="noindex, nofollow, noimageindex">
 <title>Color Time</title>
 <style>
   /* ---------- Base: light theme only, no text selection, no double-tap zoom ---------- */
@@ -108,6 +111,7 @@
   #lock { position:fixed; inset:0; background:#fff; z-index:100; display:flex; align-items:center; justify-content:center; }
   #lock.off { display:none; }
   #lock .lockbox { text-align:center; padding:20px; }
+  #lock .privnote { margin:-8px 0 16px; font-size:16px; color:#555; }
   #lock h2 { margin:0 0 18px; font-size:clamp(26px,5vmin,40px); }
   #pinDots { display:flex; justify-content:center; gap:18px; margin-bottom:10px; }
   #pinDots i { width:24px; height:24px; border-radius:50%; border:4px solid var(--ink); }
@@ -135,6 +139,7 @@
 <div id="lock">
   <div class="lockbox">
     <h2>Enter PIN</h2>
+    <div class="privnote">For personal use only</div>
     <div id="pinDots"><i></i><i></i><i></i><i></i></div>
     <div id="pinMsg"></div>
     <div id="pad">
@@ -218,7 +223,7 @@
    =================================================================== */
 
 // Bump on every code change (CalVer with daily build number)
-const VERSION = 'v2026.11.01.16';
+const VERSION = 'v2026.11.01.17';
 const NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 
