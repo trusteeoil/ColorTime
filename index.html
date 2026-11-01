@@ -40,7 +40,7 @@
   .card { position:relative; width:100%; aspect-ratio:4/3; background:#fff; border-radius:22px; border:5px solid var(--ink);
     box-shadow:0 6px 0 rgba(0,0,0,.15); overflow:hidden; padding:0; }
   .card:active { transform:scale(.97); }
-  .card svg, .card canvas { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; }
+  .card svg, .card canvas, .card img { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; }
   .badge { position:absolute; top:6px; right:6px; width:clamp(30px,9vw,52px); height:clamp(30px,9vw,52px); border-radius:12px;
     background:var(--green); display:flex; align-items:center; justify-content:center; border:3px solid #fff; }
   .badge svg { width:70%; height:70%; }
@@ -82,7 +82,7 @@
   /* Selected dot/swatch gets a thick ring so a toddler can see what is active */
   .dot.active, .sw.active { box-shadow:0 0 0 4px #fff, 0 0 0 9px var(--ink); transform:scale(1.06); }
   #art { grid-area:art; position:relative; min-height:0; min-width:0; }
-  canvas { object-fit:contain; }
+  canvas, .card img { object-fit:contain; }
   #art svg, #art canvas { position:absolute; left:12px; right:12px; top:6px; bottom:6px; width:calc(100% - 24px); height:calc(100% - 12px);
     background:#fff; border-radius:18px; box-shadow:0 6px 0 rgba(0,0,0,.15); }
   #pal { grid-area:pal; display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:clamp(10px,2.4vmin,20px); padding:14px 14px 14px 8px; }
@@ -218,7 +218,7 @@
    =================================================================== */
 
 // Bump on every code change (CalVer with daily build number)
-const VERSION = 'v2026.11.01.15';
+const VERSION = 'v2026.11.01.16';
 const NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 
@@ -376,10 +376,11 @@ const CAR_SVG = `
 /* ---------- Picture list ----------
    Each entry: { id, vb (viewBox), nodes (SVG child elements) } */
 const IMAGES = [];
-function addImage(id, svgText) {
+// Turns SVG text into a picture entry (or null if unusable). Nothing is added to the list here.
+function parseImage(id, svgText) {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
   const root = doc.documentElement;
-  if (!root || root.nodeName !== 'svg' || doc.querySelector('parsererror')) return false;
+  if (!root || root.nodeName !== 'svg' || doc.querySelector('parsererror')) return null;
   root.querySelectorAll('script,foreignObject').forEach(e => e.remove());   // safety: no active content
   let vb, sw = 0, nodes;
   if (root.querySelector('[class~="r"]')) {
@@ -389,20 +390,54 @@ function addImage(id, svgText) {
   } else {
     // Any other SVG: guess which shapes should be colorable
     const conv = autoConvert(root);
-    if (!conv) return false;
+    if (!conv) return null;
     if (conv.lineArt) {
       // Paint-bucket mode: draw the SVG to a bitmap and flood fill between the dark lines
       const W = vwOf(conv.vb) >= vhOf(conv.vb) ? 1400 : Math.round(1400 * vwOf(conv.vb) / vhOf(conv.vb));
       const H = vwOf(conv.vb) >= vhOf(conv.vb) ? Math.round(1400 * vhOf(conv.vb) / vwOf(conv.vb)) : 1400;
       root.setAttribute('viewBox', conv.vb); root.setAttribute('width', W); root.setAttribute('height', H);
-      IMAGES.push({ id, vb: `0 0 ${W} ${H}`, sw: 0, nodes: [],
-        raster: { w: W, h: H, svgText: new XMLSerializer().serializeToString(root) } });
-      return true;
+      return { id, vb: `0 0 ${W} ${H}`, sw: 0, nodes: [],
+        raster: { w: W, h: H, svgText: new XMLSerializer().serializeToString(root) } };
     }
     ({ vb, sw, nodes } = conv);
   }
-  IMAGES.push({ id, vb, sw, nodes });
+  return { id, vb, sw, nodes };
+}
+function addImage(id, svgText) {
+  const e = parseImage(id, svgText);
+  if (!e) return false;
+  IMAGES.push(e);
   return true;
+}
+
+/* ---------- Lazy loading (this is what keeps iPad Safari alive with 100+ pictures) ----------
+   Files from the folder start as empty placeholders { id, lazy: 'file name' }. A picture is only
+   downloaded and converted when its card scrolls near the screen, or when it is tapped, and only
+   two at a time. Before this, every picture was converted at startup and iPad ran out of memory. */
+const loadQueue = [];
+let loadingNow = 0;
+function ensureLoaded(img) {
+  if (!img.lazy) return Promise.resolve(!img.bad);
+  if (!img.loading) {
+    img.loading = new Promise(res => { loadQueue.push({ img, res }); pumpLoads(); });
+  }
+  return img.loading;
+}
+function pumpLoads() {
+  while (loadingNow < 2 && loadQueue.length) {
+    const { img, res } = loadQueue.shift();
+    loadingNow++;
+    fetch(encodeURI(img.lazy), { cache: 'no-cache' })
+      .then(r => r.ok ? r.text() : Promise.reject())
+      .then(t => {
+        const e = parseImage(img.id, t);
+        if (!e) throw 0;
+        delete img.lazy; Object.assign(img, e);
+        res(true);
+      })
+      .catch(() => { img.bad = true; delete img.lazy; res(false); })
+      .finally(() => { loadingNow--; pumpLoads(); });
+  }
 }
 
 /* ---------- Smart import: turn an ordinary SVG into a coloring picture ----------
@@ -539,21 +574,20 @@ const idForFile = name => { const m = /^(\d+)\.svg$/i.exec(name); return m ? 'im
 
 async function loadExternal() {
   let added = 0;
+  const have = new Set(IMAGES.map(i => i.id));
+  const addLazy = name => {
+    const id = idForFile(name);
+    if (have.has(id)) return;
+    have.add(id); IMAGES.push({ id, lazy: name }); added++;
+  };
   const names = await listFiles();
-  if (names.length) {
-    for (const name of names) {
+  if (names.length) names.forEach(addLazy);
+  else {
+    for (let n = 1; n < 500; n++) {                              // 3) numbered fallback: just check the file exists
       try {
-        const res = await fetch(encodeURI(name), { cache: 'no-cache' });
-        if (res.ok && addImage(idForFile(name), await res.text())) added++;
-      } catch (e) {}
-    }
-  } else {
-    for (let n = 1; n < 500; n++) {                              // 3) numbered fallback
-      try {
-        const res = await fetch(n + '.svg', { cache: 'no-cache' });
+        const res = await fetch(n + '.svg', { method: 'HEAD', cache: 'no-cache' });
         if (!res.ok) break;
-        if (!addImage('img' + n, await res.text())) break;
-        added++;
+        addLazy(n + '.svg');
       } catch (e) { break; }
     }
   }
@@ -662,9 +696,10 @@ function ensureRaster(img) {
   if (!r.promise) {
     r.promise = new Promise(res => {
       const im = new Image();
-      im.onload = () => { try { res(buildRaster(img, im)); } catch (e) { res(null); } };
-      im.onerror = () => res(null);
-      im.src = URL.createObjectURL(new Blob([r.svgText], { type: 'image/svg+xml' }));
+      const url = URL.createObjectURL(new Blob([r.svgText], { type: 'image/svg+xml' }));
+      im.onload = () => { try { res(buildRaster(img, im)); } catch (e) { res(null); } URL.revokeObjectURL(url); };
+      im.onerror = () => { res(null); URL.revokeObjectURL(url); };
+      im.src = url;
     });
   }
   return r.promise;
@@ -827,13 +862,20 @@ function rasterApply(R, x, y, key) {        // color the area at (x, y)
   if (!mask) return false;
   if (mask[2 * R.w + 2]) R.bgKey = key;      // this area touches the top-left corner: it is the background
   const d = dilate(mask, R.w, R.h, 2);      // slide the color 2px under the lines so no white halo shows
-  const id = R.tmpCtx.createImageData(R.w, R.h);
-  for (let i = 0; i < d.length; i++) if (d[i]) id.data[i * 4 + 3] = 255;
+  const id = R.maskId || (R.maskId = R.tmpCtx.createImageData(R.w, R.h));   // one reusable buffer, not a new 8MB one per tap
+  for (let i = 0; i < d.length; i++) id.data[i * 4 + 3] = d[i] ? 255 : 0;
   R.tmpCtx.globalCompositeOperation = 'source-over'; R.tmpCtx.putImageData(id, 0, 0);
   R.tmpCtx.globalCompositeOperation = 'source-in'; R.tmpCtx.fillStyle = canvasFill(key, R.k); R.tmpCtx.fillRect(0, 0, R.w, R.h);
   R.tmpCtx.globalCompositeOperation = 'source-over';
   R.colorCtx.drawImage(R.tmp, 0, 0);
   return true;
+}
+// Free the big bitmaps of a picture (called when leaving it). They are rebuilt on demand.
+function releaseRaster(img) {
+  if (!img || !img.raster) return;
+  const R = img.raster.R;
+  if (R) { [R.lineCv, R.colorCv, R.tmp, R.display].forEach(c => { c.width = c.height = 0; }); }
+  img.raster.R = null; img.raster.promise = null;
 }
 function rasterReplay(R, list) {            // rebuild the colors from the saved list of taps
   R.colorCtx.clearRect(0, 0, R.w, R.h);
@@ -911,7 +953,7 @@ function makeSvg(img, fills) {
   return svg;
 }
 
-// One entry point for all views: vector pictures give an SVG, paint-bucket pictures give a canvas
+// One entry point for the big views: vector pictures give an SVG, paint-bucket pictures give a canvas
 function makeView(img, p) {
   if (!img.raster) return makeSvg(img, p.fills || {});
   const cv = document.createElement('canvas'); cv.width = img.raster.w; cv.height = img.raster.h;
@@ -924,6 +966,46 @@ function makeView(img, p) {
   return cv;
 }
 
+/* Gallery previews for paint-bucket pictures: a small bitmap (560px wide) is built once, saved as a
+   compressed JPEG and the big working bitmaps are thrown away. Saved taps are replayed at small scale. */
+function makeThumb(img, p) {
+  const list = p.rf || [], sig = list.length;
+  if (img.thumb && img.thumb.sig === sig) return Promise.resolve(img.thumb);
+  const r = img.raster, tw = 560, th = Math.round(tw * r.h / r.w);
+  const tmp = { raster: { w: tw, h: th, svgText: r.svgText } };
+  return ensureRaster(tmp).then(R => {
+    if (!R) return null;
+    const f = tw / r.w;
+    rasterReplay(R, list.map(([x, y, k]) => [Math.min(tw - 1, Math.floor(x * f)), Math.min(th - 1, Math.floor(y * f)), k]));
+    const url = R.display.toDataURL('image/jpeg', 0.85);
+    const meta = { sig, url, bg: { w: tw, h: th, k: R.k, bgKey: R.bgKey } };
+    releaseRaster(tmp);
+    return (img.thumb = meta);
+  });
+}
+// Put the picture into a gallery card (only called for cards near the screen)
+function fillCard(card, img) {
+  if (card._filled) return;
+  card._filled = true;
+  ensureLoaded(img).then(ok => {
+    if (!ok) { card.remove(); const i = IMAGES.indexOf(img); if (i > -1) IMAGES.splice(i, 1); return; }
+    if (!card.isConnected || !card._filled) return;
+    const p = save[img.id] || { fills: {} };
+    if (!img.raster) { card.prepend(makeSvg(img, p.fills || {})); return; }
+    makeThumb(img, p).then(t => {
+      if (!t || !card.isConnected || !card._filled) return;
+      const el = new Image(); el.src = t.url; el.alt = '';
+      card.prepend(el); rasterBg(t.bg, el);
+    });
+  });
+}
+// Empty a card that scrolled far away so memory stays small; it refills when it comes back
+function emptyCard(card) {
+  card._filled = false;
+  card.querySelectorAll(':scope > svg, :scope > img, :scope > canvas').forEach(e => e.remove());
+}
+let cardObserver = null;
+
 /* ---------- Screens ---------- */
 function show(name) {
   ['home', 'paint', 'done'].forEach(s => $(s).classList.toggle('on', s === name));
@@ -931,19 +1013,25 @@ function show(name) {
 
 const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>';
 
-// Home gallery: one card per picture, showing current progress; green check if finished
+// Home gallery: one card per picture, showing current progress; green check if finished.
+// Cards start empty and fill in as they scroll into view (see lazy loading above).
 function buildGallery() {
   const g = $('gallery');
+  if (cardObserver) cardObserver.disconnect();
   g.innerHTML = '';
+  cardObserver = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) fillCard(e.target, e.target._img); else emptyCard(e.target);
+  }), { root: $('galleryWrap'), rootMargin: '400px 0px' });
   IMAGES.forEach(img => {
     const p = save[img.id] || { fills: {} };
     const b = document.createElement('button');
     b.className = 'card';
     b.setAttribute('aria-label', 'Color this picture');
-    b.appendChild(makeView(img, p));
+    b._img = img;
     if (p.done) b.insertAdjacentHTML('beforeend', `<div class="badge">${CHECK}</div>`);
     b.onclick = () => openImage(img);
     g.appendChild(b);
+    cardObserver.observe(b);
   });
 }
 
@@ -955,12 +1043,25 @@ let hist = [];           // undo stack for this visit: { rid, prev, key, added }
 
 function updateUndo() { $('undoBtn').disabled = !hist.length; }
 
+let galleryScroll = 0;   // where the home list was scrolled to, so Home puts you back there
 function openImage(img) {
-  cur = img;
-  hist = []; updateUndo();
-  $('art').replaceChildren(makeView(img, prog(img.id)));
-  renderTools();
-  show('paint');
+  galleryScroll = $('galleryWrap').scrollTop;
+  ensureLoaded(img).then(ok => {
+    if (!ok) return;
+    if (cur && cur !== img) releaseRaster(cur);
+    cur = img;
+    hist = []; updateUndo();
+    $('art').replaceChildren(makeView(img, prog(img.id)));
+    renderTools();
+    show('paint');
+  });
+}
+function goHome() {
+  if (cur) cur.thumb = null;                         // preview must be rebuilt with the new coloring
+  releaseRaster(cur);                                // free the big bitmaps before the gallery draws
+  $('art').replaceChildren(); $('doneArt').replaceChildren();
+  show('home'); buildGallery();
+  $('galleryWrap').scrollTop = galleryScroll;
 }
 
 // Left dots show the chosen color in each style; bottom palette shows all colors in the chosen style
@@ -1031,8 +1132,8 @@ function showDone() {
   tada(); confetti();
 }
 $('doneBtn').onclick = showDone;
-$('homeBtn').onclick = () => { buildGallery(); show('home'); };
-$('doneHome').onclick = () => { buildGallery(); show('home'); };
+$('homeBtn').onclick = goHome;
+$('doneHome').onclick = goHome;
 $('keepBtn').onclick = () => openImage(cur);
 
 /* ---------- Hold-to-reset ----------
