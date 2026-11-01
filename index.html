@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="color-scheme" content="light">
+<title>Color Time</title>
+<style>
+  /* ---------- Base: light theme only, no text selection, no double-tap zoom ---------- */
+  :root { color-scheme: light; --ink:#222; --bg:#ffffff; --blue:#3a86ff; --green:#2fbf5b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; touch-action:manipulation; }
+  button { font:inherit; color:inherit; cursor:pointer; border:none; background:none; padding:0; }
+
+  /* Only one screen is visible at a time. JS toggles the "on" class. */
+  .screen { display:none; height:100dvh; width:100%;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #home.on, #done.on { display:flex; flex-direction:column; }
+  #paint.on { display:grid; }
+
+  /* ---------- Shared look of the pictures (applies to inline SVGs) ----------
+     .r    = a tappable area (white until colored)
+     .line = decoration lines that are never tappable */
+  .r { fill:#fff; stroke:#222; stroke-width:var(--sw,6); stroke-linejoin:round; cursor:pointer; }
+  .line { fill:none; stroke:#222; stroke-width:var(--sw,6); stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+  /* Small fade-in on tap. Opacity (not scale) so shapes with their own transform don't jump. */
+  @keyframes pop { 0% { opacity:.35; } 100% { opacity:1; } }
+  .r.pop { animation: pop .28s ease; }
+
+  /* ---------- Home screen ---------- */
+  #home h1 { margin:0; padding:18px 12px 0; text-align:center; font-size:clamp(32px,7vmin,64px); letter-spacing:1px; }
+  #home { position:relative; }
+  /* The wrapper is the scroller; the grid inside just takes its natural height, so rows never get squashed */
+  #galleryWrap { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
+  /* Vertical scroll, two pictures per row */
+  #gallery { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:clamp(14px,3vw,28px); align-content:start;
+    max-width:1000px; margin:0 auto; padding:18px clamp(14px,4vw,32px) 40px; }
+  .card { position:relative; width:100%; aspect-ratio:4/3; background:#fff; border-radius:22px; border:5px solid var(--ink);
+    box-shadow:0 6px 0 rgba(0,0,0,.15); overflow:hidden; padding:0; }
+  .card:active { transform:scale(.97); }
+  .card svg, .card canvas { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; }
+  .badge { position:absolute; top:6px; right:6px; width:clamp(30px,9vw,52px); height:clamp(30px,9vw,52px); border-radius:12px;
+    background:var(--green); display:flex; align-items:center; justify-content:center; border:3px solid #fff; }
+  .badge svg { width:70%; height:70%; }
+  /* Settings gear: top right, faint, out of the way of the pictures */
+  #gearBtn { position:absolute; top:calc(10px + env(safe-area-inset-top)); right:10px; width:44px; height:44px; opacity:.35; font-size:24px; z-index:3; }
+
+  /* ---------- Paint screen ----------
+     Left column = color style dots, bottom = palette, center = picture */
+  #paint { grid-template-columns:auto 1fr; grid-template-rows:auto 1fr auto;
+    grid-template-areas:"top top" "cats art" "cats pal"; }
+  #top { grid-area:top; display:flex; justify-content:space-between; padding:10px 14px; }
+  .bigbtn { width:clamp(54px,9vmin,76px); height:clamp(54px,9vmin,76px); border-radius:18px; border:5px solid var(--ink);
+    display:flex; align-items:center; justify-content:center; background:#fff; box-shadow:0 5px 0 rgba(0,0,0,.18); }
+  .bigbtn:active { transform:translateY(3px); box-shadow:0 2px 0 rgba(0,0,0,.18); }
+  .bigbtn svg { width:62%; height:62%; }
+  #doneBtn { background:var(--green); }
+  /* Hold-to-reset button: a red fill rises while held; letting go early cancels it */
+  #resetBtn { position:relative; overflow:hidden; touch-action:none; }
+  #resetBtn svg { position:relative; z-index:1; }
+  #resetBtn .prog { position:absolute; left:0; bottom:0; width:100%; height:0; background:#ff9d9d; }
+  #resetBtn.holding .prog { animation: fillup 1.2s linear forwards; }
+  @keyframes fillup { to { height:100%; } }
+  /* Small hint shown when the reset button is only tapped */
+  #hint { position:fixed; left:50%; bottom:22%; transform:translateX(-50%); background:var(--ink); color:#fff; padding:12px 22px;
+    border-radius:30px; font-size:20px; font-weight:700; opacity:0; pointer-events:none; transition:opacity .25s; z-index:9; }
+  #hint.on { opacity:.92; }
+  #undoBtn:disabled { opacity:.35; box-shadow:none; cursor:default; }
+
+  /* ---------- Effects layer: tap sparkles and done-screen confetti ---------- */
+  #fx { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:8; }
+  .spark { position:absolute; font-size:26px; line-height:1; -webkit-text-stroke:1.5px #222; transform:translate(-50%,-50%);
+    animation: spark .6s ease-out forwards; }
+  @keyframes spark { to { transform:translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(.3) rotate(180deg); opacity:0; } }
+  .conf { position:absolute; top:-30px; width:14px; height:22px; border-radius:3px; border:2px solid #222; animation: fall linear forwards; }
+  @keyframes fall { to { transform:translateY(115vh) rotate(720deg); } }
+  #cats { grid-area:cats; display:flex; flex-direction:column; justify-content:center; gap:clamp(14px,4vmin,30px); padding:6px 10px 6px 14px; }
+  .dot { width:clamp(48px,11vmin,84px); height:clamp(48px,11vmin,84px); border-radius:50%; }
+  .dot svg, .sw svg { width:100%; height:100%; display:block; }
+  /* Selected dot/swatch gets a thick ring so a toddler can see what is active */
+  .dot.active, .sw.active { box-shadow:0 0 0 4px #fff, 0 0 0 9px var(--ink); transform:scale(1.06); }
+  #art { grid-area:art; position:relative; min-height:0; min-width:0; }
+  canvas { object-fit:contain; }
+  #art svg, #art canvas { position:absolute; left:12px; right:12px; top:6px; bottom:6px; width:calc(100% - 24px); height:calc(100% - 12px);
+    background:#fff; border-radius:18px; box-shadow:0 6px 0 rgba(0,0,0,.15); }
+  #pal { grid-area:pal; display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:clamp(10px,2.4vmin,20px); padding:14px 14px 14px 8px; }
+  .sw { width:clamp(40px,8.2vmin,70px); height:clamp(40px,8.2vmin,70px); border-radius:50%; }
+
+  /* ---------- Done screen ---------- */
+  #done { align-items:center; overflow-y:auto; padding-bottom:24px; touch-action:pan-y; }
+  #done h2 { margin:18px 0 8px; font-size:clamp(30px,7vmin,60px); text-align:center; }
+  #doneArt { width:min(92vw,720px); aspect-ratio:4/3; flex:none; }
+  #doneArt svg, #doneArt canvas { width:100%; height:100%; display:block; background:#fff; border-radius:20px; border:6px solid var(--ink); pointer-events:none; }
+  #order { display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin:18px 12px 6px; max-width:760px; }
+  .ord { position:relative; width:clamp(44px,9vmin,64px); height:clamp(44px,9vmin,64px); }
+  .ord svg { width:100%; height:100%; display:block; }
+  .ord b { position:absolute; left:-6px; top:-8px; min-width:24px; height:24px; padding:0 5px; border-radius:12px; background:var(--ink);
+    color:#fff; font-size:15px; display:flex; align-items:center; justify-content:center; }
+  #doneBtns { display:flex; gap:18px; margin-top:16px; flex-wrap:wrap; justify-content:center; }
+  .pill { padding:16px 34px; border-radius:40px; font-size:clamp(22px,4.5vmin,34px); font-weight:700; border:5px solid var(--ink);
+    background:#fff; box-shadow:0 6px 0 rgba(0,0,0,.18); }
+  .pill.main { background:var(--blue); color:#fff; }
+  .pill:active { transform:translateY(3px); }
+
+  /* ---------- PIN lock: covers everything until the right PIN is entered ---------- */
+  #lock { position:fixed; inset:0; background:#fff; z-index:100; display:flex; align-items:center; justify-content:center; }
+  #lock.off { display:none; }
+  #lock .lockbox { text-align:center; padding:20px; }
+  #lock h2 { margin:0 0 18px; font-size:clamp(26px,5vmin,40px); }
+  #pinDots { display:flex; justify-content:center; gap:18px; margin-bottom:10px; }
+  #pinDots i { width:24px; height:24px; border-radius:50%; border:4px solid var(--ink); }
+  #pinDots i.on { background:var(--ink); }
+  #pinMsg { height:26px; margin-bottom:10px; font-size:18px; color:#c1121f; font-weight:700; }
+  #pad { display:grid; grid-template-columns:repeat(3,auto); gap:14px; justify-content:center; }
+  #pad button { width:clamp(62px,15vmin,90px); height:clamp(62px,15vmin,90px); border-radius:50%; border:4px solid var(--ink);
+    background:#fff; font-size:clamp(26px,6vmin,36px); font-weight:700; box-shadow:0 5px 0 rgba(0,0,0,.18); }
+  #pad button:active { transform:translateY(3px); box-shadow:0 2px 0 rgba(0,0,0,.18); }
+  #pad button:disabled { opacity:.35; }
+  #pinDots.shake { animation: shake .35s; }
+  @keyframes shake { 20%,60% { transform:translateX(-10px); } 40%,80% { transform:translateX(10px); } }
+
+  /* ---------- Settings (grown-ups only, tucked away on home screen) ---------- */
+  #settings { position:fixed; inset:0; background:rgba(0,0,0,.35); display:none; align-items:center; justify-content:center; z-index:10; }
+  #settings.on { display:flex; }
+  #settings .box { max-height:92dvh; overflow-y:auto; background:#fff; border:5px solid var(--ink); border-radius:24px; padding:24px; width:min(88vw,380px); text-align:center; }
+  #settings p { margin:0 0 16px; font-size:16px; }
+  #settings .pill { font-size:18px; padding:12px 22px; margin:6px; }
+</style>
+</head>
+<body>
+
+<!-- PIN lock (shown first; JS hides it after the right PIN) -->
+<div id="lock">
+  <div class="lockbox">
+    <h2>Enter PIN</h2>
+    <div id="pinDots"><i></i><i></i><i></i><i></i></div>
+    <div id="pinMsg"></div>
+    <div id="pad">
+      <button data-d="1">1</button><button data-d="2">2</button><button data-d="3">3</button>
+      <button data-d="4">4</button><button data-d="5">5</button><button data-d="6">6</button>
+      <button data-d="7">7</button><button data-d="8">8</button><button data-d="9">9</button>
+      <button data-d="x" aria-label="Clear">&#9003;</button><button data-d="0">0</button><span></span>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden SVG that holds every color pattern (sparkle + stripes). Sized 0x0 instead of display:none,
+     because some browsers refuse to use patterns from a display:none SVG. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="defs"></defs></svg>
+
+<!-- HOME: gallery of pictures -->
+<section id="home" class="screen on">
+  <h1>Let's Color!</h1>
+  <div id="galleryWrap">
+    <div id="gallery"></div>
+  </div>
+  <button id="gearBtn" aria-label="Settings">&#9881;</button>
+</section>
+
+<!-- PAINT: tools on the left, picture in the middle, palette along the bottom -->
+<section id="paint" class="screen">
+  <div id="top">
+    <button class="bigbtn" id="homeBtn" aria-label="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#222" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+    </button>
+    <!-- Undo the last tap (toddlers mis-tap a lot, this is gentler than reset) -->
+    <button class="bigbtn" id="undoBtn" aria-label="Undo" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="#222" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 15L4 10l5-5"/><path d="M4 10h9a5.5 5.5 0 0 1 0 11H8"/></svg>
+    </button>
+    <!-- Hold this to wipe the current picture back to blank (a quick tap does nothing but show a hint) -->
+    <button class="bigbtn" id="resetBtn" aria-label="Hold to start over">
+      <div class="prog"></div>
+      <svg viewBox="0 0 24 24" fill="none" stroke="#222" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3.5V8h-4.5"/></svg>
+    </button>
+    <button class="bigbtn" id="doneBtn" aria-label="All done">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+    </button>
+  </div>
+  <div id="cats"></div>
+  <div id="art"></div>
+  <div id="pal"></div>
+</section>
+
+<!-- DONE: finished picture plus the order the colors were used -->
+<section id="done" class="screen">
+  <h2>&#11088; Great job! &#11088;</h2>
+  <div id="doneArt"></div>
+  <div id="order"></div>
+  <div id="doneBtns">
+    <button class="pill main" id="doneHome">Home</button>
+    <button class="pill" id="keepBtn">Keep coloring</button>
+  </div>
+</section>
+
+<div id="hint">Hold to start over</div>
+<div id="fx"></div>
+
+<!-- SETTINGS -->
+<div id="settings">
+  <div class="box">
+    <p><b>Color Time</b><br><span id="ver"></span></p>
+    <button class="pill" id="soundBtn">Sound: On</button>
+    <button class="pill" id="addBtn">Add pictures (SVG files)</button>
+    <input type="file" id="fileIn" accept=".svg,image/svg+xml" multiple hidden>
+    <p id="addMsg" style="margin:4px 0 0;font-size:15px"></p>
+    <button class="pill" id="removeBtn">Remove added pictures</button>
+    <button class="pill" id="eraseBtn">Erase all coloring</button>
+    <button class="pill main" id="closeSet">Close</button>
+  </div>
+</div>
+
+<script>
+/* ===================================================================
+   Color Time: a toddler coloring game. Single file, no libraries.
+   Pictures are SVGs. Every shape with class="r" is a tappable area.
+   =================================================================== */
+
+// Bump on every code change (CalVer with daily build number)
+const VERSION = 'v2026.11.01.15';
+const NS = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+
+/* ---------- Colors ----------
+   10 main colors. Each can be used as solid (s), sparkle (p), or stripes (t).
+   A "color key" is style letter + color index, like "s3" or "t7". Keys are what we save. */
+const COLORS = [
+  { n:'Red',    h:'#e63946' }, { n:'Orange', h:'#ff9f1c' }, { n:'Yellow', h:'#ffd60a' },
+  { n:'Green',  h:'#38b000' }, { n:'Sky',    h:'#4cc9f0' }, { n:'Blue',   h:'#2f5bea' },
+  { n:'Purple', h:'#9d4edd' }, { n:'Pink',   h:'#ff7eb6' }, { n:'Brown',  h:'#8d5a3b' },
+  { n:'Black',  h:'#222222' }
+];
+
+/* Build the sparkle and stripe patterns once. Two sets:
+   "a" = for the pictures (big tiles), "w" = for the small swatch dots (small tiles). */
+function buildDefs() {
+  const star = (cx, cy, r) =>   // a concave 4-point sparkle
+    `M${cx},${cy - r}Q${cx},${cy} ${cx + r},${cy}Q${cx},${cy} ${cx},${cy + r}Q${cx},${cy} ${cx - r},${cy}Q${cx},${cy} ${cx},${cy - r}Z`;
+  let h = '';
+  [['a', 1], ['w', 0.5]].forEach(([set, s]) => {
+    const T = 60 * s, sk = (1.5 * s).toFixed(2);
+    COLORS.forEach((c, i) => {
+      // Sparkle: color background with white/silver stars
+      const stars = [[14,16,11],[42,34,14],[18,50,7],[52,8,6]]
+        .map(([x, y, r]) => `<path d="${star(x * s, y * s, r * s)}" fill="#fff" stroke="#b8c2cc" stroke-width="${sk}"/>`).join('');
+      h += `<pattern id="${set}-p-${i}" width="${T}" height="${T}" patternUnits="userSpaceOnUse">
+              <rect width="${T}" height="${T}" fill="${c.h}"/>${stars}</pattern>`;
+      // Stripes: diagonal color + white bands
+      const ST = 22 * s;   // stripe tile: small = thin stripes, many per shape
+      h += `<pattern id="${set}-t-${i}" width="${ST}" height="${ST}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+              <rect width="${ST}" height="${ST}" fill="#fff"/><rect width="${ST}" height="${ST / 2}" fill="${c.h}"/></pattern>`;
+    });
+  });
+  $('defs').innerHTML = h;
+  startShimmer();
+}
+
+/* Sparkle motion: the stars stay in place and slowly fade in and out (a gentle glow), each at a
+   different time. No sliding, which can feel dizzy. Done in JS (not SMIL) because Safari does not
+   always repaint animated patterns. Runs about 22 times per second. */
+function startShimmer() {
+  const pats = [...document.querySelectorAll('#defs pattern')].filter(el => el.id.includes('-p-'))
+    .map((el, n) => ({ n, stars: [...el.querySelectorAll('path')] }));
+  let last = 0;
+  (function frame(t) {
+    requestAnimationFrame(frame);
+    if (t - last < 45) return;
+    last = t;
+    const sec = t / 1000;
+    pats.forEach(({ n, stars }) => {
+      stars.forEach((st, i) => st.setAttribute('opacity', (0.5 + 0.5 * Math.sin(sec * 3 + i * 1.9 + n)).toFixed(2)));
+    });
+  })(0);
+}
+
+// Turn a color key into a CSS fill value. set = 'a' (pictures) or 'w' (swatches)
+function fillFor(key, set) {
+  const i = +key.slice(1), st = key[0];
+  return st === 's' ? COLORS[i].h : `url(#${set}-${st}-${i})`;
+}
+// Small round swatch used for dots, palette and the "color order" row
+const swatchSVG = key =>
+  `<svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="35" fill="${fillFor(key, 'w')}" stroke="#222" stroke-width="4"/></svg>`;
+
+/* ---------- Built-in pictures (viewBox 0 0 800 600) ----------
+   Shapes are listed back to front. Later shapes sit on top of earlier ones. */
+const CLOUD = 'M120,180 C80,180 75,130 120,125 C125,85 185,75 205,110 C235,85 290,105 285,145 C325,150 325,185 285,185 Z';
+
+const DOG_SVG = `
+  <rect class="r" x="3" y="3" width="794" height="594"/>
+  <path class="r" d="M-3000,370 H3 Q200,340 400,365 T797,355 H3800 V3600 H-3000 Z"/>
+  <circle class="r" cx="680" cy="110" r="60"/>
+  <path class="r" transform="translate(200 -30)" d="${CLOUD}"/>
+  <rect class="r" x="80" y="300" width="40" height="115"/>
+  <circle class="r" cx="100" cy="250" r="75"/>
+  <path class="line" d="M700,545 Q695,565 700,585"/>
+  <circle class="r" cx="700" cy="500" r="45"/>
+  <circle class="r" cx="700" cy="500" r="18"/>
+  <ellipse class="r" cx="548" cy="425" rx="22" ry="55" transform="rotate(35 548 425)"/>
+  <ellipse class="r" cx="400" cy="450" rx="120" ry="110"/>
+  <ellipse class="r" cx="400" cy="480" rx="62" ry="62"/>
+  <path class="r" d="M305,385 Q400,430 495,385 L490,412 Q400,458 310,412 Z"/>
+  <ellipse class="r" cx="295" cy="290" rx="45" ry="85" transform="rotate(15 295 290)"/>
+  <ellipse class="r" cx="505" cy="290" rx="45" ry="85" transform="rotate(-15 505 290)"/>
+  <circle class="r" cx="400" cy="300" r="110"/>
+  <ellipse class="r" cx="400" cy="335" rx="62" ry="46"/>
+  <path class="r" d="M375,360 Q400,432 425,360 Z"/>
+  <path class="line" d="M345,350 Q372,378 400,360 Q428,378 455,350"/>
+  <ellipse class="r" cx="400" cy="312" rx="26" ry="18"/>
+  <circle class="r" cx="358" cy="272" r="20"/>
+  <circle class="r" cx="442" cy="272" r="20"/>
+  <ellipse class="r" cx="350" cy="545" rx="42" ry="28"/>
+  <ellipse class="r" cx="450" cy="545" rx="42" ry="28"/>`;
+
+const HOUSE_SVG = `
+  <rect class="r" x="3" y="3" width="794" height="594"/>
+  <path class="r" d="M-3000,470 H3 Q200,442 400,465 T797,452 H3800 V3600 H-3000 Z"/>
+  <circle class="r" cx="150" cy="100" r="55"/>
+  <path class="r" transform="translate(380 -60)" d="${CLOUD}"/>
+  <path class="r" d="M360,482 L440,482 L520,597 L280,597 Z"/>
+  <rect class="r" x="640" y="330" width="36" height="150"/>
+  <circle class="r" cx="658" cy="285" r="78"/>
+  <rect class="r" x="470" y="150" width="45" height="90"/>
+  <rect class="r" x="250" y="260" width="300" height="222"/>
+  <polygon class="r" points="215,268 400,130 585,268"/>
+  <circle class="r" cx="400" cy="205" r="30"/>
+  <rect class="r" x="360" y="372" width="80" height="110"/>
+  <circle class="r" cx="428" cy="428" r="7"/>
+  <rect class="r" x="285" y="310" width="60" height="60"/>
+  <rect class="r" x="455" y="310" width="60" height="60"/>
+  <path class="line" d="M315,310 V370 M285,340 H345 M485,310 V370 M455,340 H515"/>
+  <ellipse class="r" cx="190" cy="462" rx="55" ry="38"/>
+  <path class="line" d="M120,540 V585"/>
+  <circle class="r" cx="120" cy="515" r="32"/>
+  <circle class="r" cx="120" cy="515" r="12"/>`;
+
+const FISH_SVG = `
+  <rect class="r" x="3" y="3" width="794" height="594"/>
+  <path class="r" d="M-3000,500 H3 Q200,470 400,495 T797,485 H3800 V3600 H-3000 Z"/>
+  <ellipse class="r" cx="110" cy="440" rx="28" ry="90"/>
+  <ellipse class="r" cx="170" cy="460" rx="24" ry="70"/>
+  <ellipse class="r" cx="700" cy="430" rx="30" ry="100"/>
+  <circle class="r" cx="210" cy="205" r="26"/>
+  <circle class="r" cx="175" cy="140" r="20"/>
+  <circle class="r" cx="225" cy="85" r="16"/>
+  <polygon class="r" points="520,300 650,205 650,395"/>
+  <path class="r" d="M320,215 Q385,60 460,215 Z"/>
+  <path class="r" d="M340,390 Q395,490 460,380 Z"/>
+  <ellipse class="r" cx="380" cy="300" rx="170" ry="110"/>
+  <ellipse class="r" cx="410" cy="300" rx="42" ry="104"/>
+  <circle class="r" cx="270" cy="270" r="30"/>
+  <circle class="r" cx="262" cy="270" r="14"/>
+  <path class="line" d="M215,330 Q240,350 264,335 M312,250 Q332,300 312,350"/>
+  <polygon class="r" transform="translate(-170 0)" points="650,503 660.6,530.4 689.9,532 667.1,550.6 674.7,579 650,563 625.3,579 632.9,550.6 610.1,532 639.4,530.4"/>`;
+
+const CAR_SVG = `
+  <rect class="r" x="3" y="3" width="794" height="594"/>
+  <path class="r" d="M-3000,400 H3 Q200,380 400,398 T797,390 H3800 V3600 H-3000 Z"/>
+  <rect class="r" x="-3000" y="465" width="6800" height="115"/>
+  <path class="line" d="M30,545 H130 M230,545 H330 M430,545 H530 M630,545 H730"/>
+  <circle class="r" cx="130" cy="100" r="55"/>
+  <path class="r" transform="translate(420 -50)" d="${CLOUD}"/>
+  <rect class="r" x="60" y="300" width="34" height="110"/>
+  <circle class="r" cx="77" cy="255" r="65"/>
+  <path class="r" d="M280,365 L330,280 H490 L540,365 Z"/>
+  <rect class="r" x="200" y="360" width="400" height="105" rx="30"/>
+  <path class="r" d="M300,358 L342,296 H395 V358 Z"/>
+  <path class="r" d="M410,358 V296 H482 L520,358 Z"/>
+  <circle class="r" cx="578" cy="402" r="20"/>
+  <circle class="r" cx="290" cy="468" r="50"/>
+  <circle class="r" cx="510" cy="468" r="50"/>
+  <circle class="r" cx="290" cy="468" r="20"/>
+  <circle class="r" cx="510" cy="468" r="20"/>`;
+
+/* ---------- Picture list ----------
+   Each entry: { id, vb (viewBox), nodes (SVG child elements) } */
+const IMAGES = [];
+function addImage(id, svgText) {
+  const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+  const root = doc.documentElement;
+  if (!root || root.nodeName !== 'svg' || doc.querySelector('parsererror')) return false;
+  root.querySelectorAll('script,foreignObject').forEach(e => e.remove());   // safety: no active content
+  let vb, sw = 0, nodes;
+  if (root.querySelector('[class~="r"]')) {
+    // Made with the template: shapes are already tagged, use as is
+    vb = root.getAttribute('viewBox') || '0 0 800 600';
+    nodes = [...root.childNodes].filter(n => n.nodeType === 1);
+  } else {
+    // Any other SVG: guess which shapes should be colorable
+    const conv = autoConvert(root);
+    if (!conv) return false;
+    if (conv.lineArt) {
+      // Paint-bucket mode: draw the SVG to a bitmap and flood fill between the dark lines
+      const W = vwOf(conv.vb) >= vhOf(conv.vb) ? 1400 : Math.round(1400 * vwOf(conv.vb) / vhOf(conv.vb));
+      const H = vwOf(conv.vb) >= vhOf(conv.vb) ? Math.round(1400 * vhOf(conv.vb) / vwOf(conv.vb)) : 1400;
+      root.setAttribute('viewBox', conv.vb); root.setAttribute('width', W); root.setAttribute('height', H);
+      IMAGES.push({ id, vb: `0 0 ${W} ${H}`, sw: 0, nodes: [],
+        raster: { w: W, h: H, svgText: new XMLSerializer().serializeToString(root) } });
+      return true;
+    }
+    ({ vb, sw, nodes } = conv);
+  }
+  IMAGES.push({ id, vb, sw, nodes });
+  return true;
+}
+
+/* ---------- Smart import: turn an ordinary SVG into a coloring picture ----------
+   Rules of thumb:
+   - a shape with a fill (any color) becomes a colorable area
+   - a closed outline with no fill (coloring-book style) also becomes a colorable area
+   - open lines stay as plain decoration
+   - tiny specks (under about 12 by 12 px) stay as decoration so they do not clutter taps
+   - original colors, gradients, text, images, filters and clips are dropped
+   - if nothing covers the background, a background area is added
+   It reads real computed styles, so CSS classes and inherited fills are understood.
+   Limit: pictures that draw their black lines as FILLED black shapes cannot be split into areas
+   (they need a different method), and very detailed pictures (over 400 shapes) are refused. */
+const vwOf = vb => +vb.trim().split(/[\s,]+/)[2], vhOf = vb => +vb.trim().split(/[\s,]+/)[3];
+function autoConvert(root) {
+  let vb = root.getAttribute('viewBox');
+  if (!vb) {
+    const w = parseFloat(root.getAttribute('width')), h = parseFloat(root.getAttribute('height'));
+    vb = (w > 0 && h > 0) ? `0 0 ${w} ${h}` : '0 0 800 600';
+  }
+  const [vx, vy, vw, vh] = vb.trim().split(/[\s,]+/).map(Number);
+  if (!(vw > 0 && vh > 0)) return null;
+
+  // Draw a copy off-screen inside a shadow root (so its CSS cannot touch this page) to read computed styles
+  const host = document.createElement('div');
+  host.style.cssText = 'position:absolute;left:-10000px;top:0;width:800px;pointer-events:none';
+  document.body.appendChild(host);
+  try {
+    const svg = document.importNode(root, true);
+    svg.setAttribute('viewBox', vb);
+    svg.setAttribute('width', 800);
+    svg.setAttribute('height', Math.round(800 * vh / vw));
+    host.attachShadow({ mode: 'open' }).appendChild(svg);
+
+    const junk = 'defs,clipPath,mask,symbol,pattern,marker';
+    const shapes = [...svg.querySelectorAll('path,rect,circle,ellipse,polygon,line,polyline')]
+      .filter(el => !el.closest(junk));
+
+    // Pass 1: only measure (changing styles while measuring would change the answers)
+    const info = shapes.map(el => {
+      const cs = getComputedStyle(el), r = el.getBoundingClientRect(), tag = el.localName;
+      const fillNone = cs.fill === 'none' || parseFloat(cs.fillOpacity) === 0;
+      const strokeNone = cs.stroke === 'none' || parseFloat(cs.strokeOpacity) === 0;
+      const hidden = cs.display === 'none' || parseFloat(cs.opacity) === 0 || (r.width === 0 && r.height === 0) || (fillNone && strokeNone);
+      const closed = ['rect', 'circle', 'ellipse', 'polygon'].includes(tag) || (tag === 'path' && /z/i.test(el.getAttribute('d') || ''));
+      const lineTag = tag === 'line' || tag === 'polyline';
+      let kind = (!lineTag && (!fillNone || closed)) ? 'r' : 'line';
+      if (kind === 'r' && r.width * r.height < 144) kind = 'line';          // tiny speck: decoration only
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(cs.fill);
+      const lum = m ? 0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3] : 255;
+      const subs = tag === 'path' ? ((el.getAttribute('d') || '').match(/[Mm]/g) || []).length : 1;   // sub-shapes in this path
+      return { el, hidden, kind, area: r.width * r.height, dark: !fillNone && lum < 80, subs };
+    });
+
+    // Pass 2: apply
+    const STRIP = ['fill', 'stroke', 'style', 'class', 'opacity', 'fill-opacity', 'stroke-opacity', 'stroke-width',
+                   'filter', 'clip-path', 'mask', 'id', 'fill-rule', 'clip-rule'];
+    let regions = 0, biggest = 0, darkBig = false, compound = false;
+    const totalPx = 800 * (800 * vh / vw);
+    info.forEach(({ el, hidden, kind, area, dark, subs }) => {
+      if (hidden) { el.remove(); return; }
+      STRIP.forEach(a => el.removeAttribute(a));
+      el.setAttribute('class', kind);
+      if (kind === 'r') { regions++; biggest = Math.max(biggest, area); if (dark && area > 0.2 * totalPx) darkBig = true; if (subs >= 4) compound = true; }
+    });
+    svg.querySelectorAll('g,svg').forEach(g => STRIP.forEach(a => g.removeAttribute(a)));
+    svg.querySelectorAll('style,title,desc,metadata,image,text,use,' + junk + ',filter,linearGradient,radialGradient').forEach(e => e.remove());
+    // Line art drawn as filled black shapes, nearly no areas, or hundreds of specks: use paint-bucket mode instead
+    // (a path with 4+ separate sub-shapes would color all of them at once, so it is treated the same way)
+    if (darkBig || compound || regions <= 2 || regions > 400) return { vb, sw: 0, nodes: [], lineArt: true };
+
+    // Add a background area if nothing is already big enough to be one
+    if (biggest < 0.85 * 800 * (800 * vh / vw)) {
+      const bg = document.createElementNS(NS, 'rect');
+      bg.setAttribute('class', 'r');
+      bg.setAttribute('x', vx); bg.setAttribute('y', vy); bg.setAttribute('width', vw); bg.setAttribute('height', vh);
+      svg.insertBefore(bg, svg.firstChild);
+    }
+    return {
+      vb,
+      sw: +(6 * Math.max(vw, vh) / 800).toFixed(2),     // keep outlines about the same thickness as built-in pictures
+      nodes: [...svg.childNodes].filter(n => n.nodeType === 1)
+    };
+  } catch (e) {
+    return null;
+  } finally {
+    host.remove();
+  }
+}
+const wrapSVG = inner => `<svg xmlns="${NS}" viewBox="0 0 800 600">${inner}</svg>`;
+
+/* Finding extra pictures. Browsers cannot list a folder, so we try these in order:
+   1) pictures.json (optional): a list of file names, like ["cat.svg","truck.svg"]
+   2) GitHub Pages sites (name.github.io): ask GitHub which .svg files sit next to this page,
+      and remember the answer in case GitHub is rate limiting us (60 requests per hour per visitor)
+   3) if nothing above found anything: look for 1.svg, 2.svg, 3.svg ... until one is missing
+   Needs a web server (GitHub Pages is fine). Opened straight from disk, none of this works. */
+const LIST_KEY = 'colorgame.filelist';
+async function listFiles() {
+  const names = new Set();
+  try {                                                         // 1) manifest
+    const r = await fetch('pictures.json', { cache: 'no-cache' });
+    if (r.ok) { const a = await r.json(); if (Array.isArray(a)) a.forEach(n => typeof n === 'string' && names.add(n)); }
+  } catch (e) {}
+  const host = location.hostname;
+  if (host.endsWith('.github.io')) {                            // 2) GitHub folder listing
+    const owner = host.split('.')[0];
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts.length && /\./.test(parts[parts.length - 1])) parts.pop();   // drop "index.html"
+    // Project site (/repo/...) or the user's own site (owner.github.io repo)
+    const tries = [];
+    if (parts.length) tries.push([parts[0], parts.slice(1).join('/')]);
+    tries.push([owner + '.github.io', parts.join('/')]);
+    let got = null;
+    for (const [repo, dir] of tries) {
+      try {
+        const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${dir}`);
+        if (r.ok) {
+          const arr = await r.json();
+          if (Array.isArray(arr)) { got = arr.filter(f => f.type === 'file' && /\.svg$/i.test(f.name)).map(f => f.name); break; }
+        }
+      } catch (e) {}
+    }
+    try {
+      if (got) localStorage.setItem(LIST_KEY, JSON.stringify(got));          // remember for next time
+      else got = JSON.parse(localStorage.getItem(LIST_KEY) || 'null');       // GitHub said no: use the last good list
+    } catch (e) {}
+    (got || []).forEach(n => names.add(n));
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+// Numbered files keep their old ids (img1, img2...) so saved coloring stays attached
+const idForFile = name => { const m = /^(\d+)\.svg$/i.exec(name); return m ? 'img' + m[1] : 'f_' + name; };
+
+async function loadExternal() {
+  let added = 0;
+  const names = await listFiles();
+  if (names.length) {
+    for (const name of names) {
+      try {
+        const res = await fetch(encodeURI(name), { cache: 'no-cache' });
+        if (res.ok && addImage(idForFile(name), await res.text())) added++;
+      } catch (e) {}
+    }
+  } else {
+    for (let n = 1; n < 500; n++) {                              // 3) numbered fallback
+      try {
+        const res = await fetch(n + '.svg', { cache: 'no-cache' });
+        if (!res.ok) break;
+        if (!addImage('img' + n, await res.text())) break;
+        added++;
+      } catch (e) { break; }
+    }
+  }
+  if (added) buildGallery();
+}
+
+/* ---------- Saved progress (browser localStorage) ----------
+   save[imageId] = { fills:{regionId:colorKey}, used:[colorKeys in first-use order], done:bool } */
+const KEY = 'colorgame.v1';
+let save = {};
+try { save = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { save = {}; }
+const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(save)); } catch (e) {} };
+const prog = id => save[id] || (save[id] = { fills: {}, used: [], done: false });
+
+/* ---------- Grown-up options (sound), saved in the browser ---------- */
+const OPT_KEY = 'colorgame.opts';
+let opts = { sound: true };
+try { Object.assign(opts, JSON.parse(localStorage.getItem(OPT_KEY) || '{}')); } catch (e) {}
+const saveOpts = () => { try { localStorage.setItem(OPT_KEY, JSON.stringify(opts)); } catch (e) {} };
+
+/* ---------- Sound (Web Audio, no files needed) ----------
+   The audio context is created on the first tap, because iOS blocks sound before a touch. */
+let actx = null;
+function audio() {
+  if (!opts.sound) return null;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    return actx;
+  } catch (e) { return null; }
+}
+function tone(freq, t0, dur, vol, type) {   // one short soft note
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain(), t = a.currentTime + t0;
+  o.type = type || 'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(a.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+/* iOS unlock. Two iPhone quirks break web sound:
+   1) the audio engine only wakes up after a finished touch (touchend/click), not always on pointerdown;
+   2) Web Audio is muted by the ringer switch unless the page is in "playback" mode.
+   So on every early gesture we resume the engine, play a silent blip, switch the audio session to
+   playback, and loop a silent <audio> clip (the older trick that also bypasses the ringer switch). */
+let silentEl = null;
+function silentWavURL() {            // builds a tiny silent WAV in memory (no file needed)
+  const n = 800, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+  w(36, 'data'); v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 128 = silence in 8-bit audio
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+function unlockAudio() {
+  const a = audio(); if (!a) return;
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
+  try { const s = a.createBufferSource(); s.buffer = a.createBuffer(1, 1, 22050); s.connect(a.destination); s.start(0); } catch (e) {}
+  if (!silentEl) {
+    try { silentEl = new Audio(silentWavURL()); silentEl.loop = true; silentEl.play().catch(() => { silentEl = null; }); } catch (e) {}
+  }
+}
+['pointerdown', 'touchend', 'click'].forEach(ev => document.addEventListener(ev, unlockAudio, { passive: true }));
+
+const SCALE = [523.25, 587.33, 659.25, 783.99, 880];   // pentatonic: any random note sounds pleasant
+function popSound(style) {
+  const f = SCALE[Math.floor(Math.random() * SCALE.length)];
+  tone(f, 0, 0.18, 0.18, style === 't' ? 'triangle' : 'sine');
+  if (style === 'p') tone(f * 2, 0.06, 0.14, 0.07);        // extra high "twinkle" for sparkle colors
+}
+function tada() { [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.12, 0.35, 0.2, 'triangle')); }
+
+/* ---------- Visual effects ---------- */
+function burst(x, y, color) {             // little stars fly out from the tap point
+  const fx = $('fx');
+  for (let i = 0; i < 7; i++) {
+    const s = document.createElement('span'), ang = Math.random() * 6.283, d = 40 + Math.random() * 50;
+    s.className = 'spark'; s.textContent = '✦';
+    s.style.cssText = `left:${x}px;top:${y}px;--dx:${Math.cos(ang) * d}px;--dy:${Math.sin(ang) * d}px;color:${color}`;
+    fx.appendChild(s);
+    setTimeout(() => s.remove(), 700);
+  }
+}
+function confetti() {                      // colored pieces rain down on the done screen
+  const fx = $('fx');
+  for (let i = 0; i < 70; i++) {
+    const c = document.createElement('div');
+    c.className = 'conf';
+    c.style.cssText = `left:${Math.random() * 100}%;background:${COLORS[i % COLORS.length].h};` +
+      `animation-duration:${2.2 + Math.random() * 1.8}s;animation-delay:${Math.random() * 0.8}s`;
+    fx.appendChild(c);
+    setTimeout(() => c.remove(), 5200);
+  }
+}
+
+/* ---------- Paint-bucket mode (for line art that cannot be split into shapes) ----------
+   The picture is drawn to a bitmap. Dark pixels are walls. Tapping flood-fills the open area
+   around the tap, up to the walls. Colors live on a layer UNDER the lines, so edges stay crisp.
+   Saved progress is just the list of taps [x, y, colorKey]; they are replayed on load.
+   Limits: a gap in a line lets the color leak into the next area; sparkles do not twinkle here. */
+function ensureRaster(img) {
+  const r = img.raster;
+  if (!r.promise) {
+    r.promise = new Promise(res => {
+      const im = new Image();
+      im.onload = () => { try { res(buildRaster(img, im)); } catch (e) { res(null); } };
+      im.onerror = () => res(null);
+      im.src = URL.createObjectURL(new Blob([r.svgText], { type: 'image/svg+xml' }));
+    });
+  }
+  return r.promise;
+}
+function dilate(m, w, h, passes) {          // grow a 0/1 mask by `passes` pixels
+  let cur = m;
+  for (let p = 0; p < passes; p++) {
+    const t = new Uint8Array(w * h), o = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0, i = y * w; x < w; x++, i++)
+      t[i] = cur[i] | (x > 0 ? cur[i - 1] : 0) | (x < w - 1 ? cur[i + 1] : 0);
+    for (let y = 0; y < h; y++) for (let x = 0, i = y * w; x < w; x++, i++)
+      o[i] = t[i] | (y > 0 ? t[i - w] : 0) | (y < h - 1 ? t[i + w] : 0);
+    cur = o;
+  }
+  return cur;
+}
+function buildRaster(img, im) {
+  const { w, h } = img.raster, n = w * h;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(im, 0, 0, w, h);
+  const src = g.getImageData(0, 0, w, h).data, line = g.createImageData(w, h);
+  // Colored picture (flat color areas) or black line art? Count clearly colorful pixels.
+  let sampled = 0, colorful = 0;
+  for (let i = 0; i < n; i += 7) {
+    const r = src[i * 4], gr = src[i * 4 + 1], b = src[i * 4 + 2], mx = Math.max(r, gr, b), mn = Math.min(r, gr, b);
+    sampled++; if (mx > 60 && (mx - mn) / mx > 0.3) colorful++;
+  }
+  let wall;
+  if (colorful / sampled > 0.08) {
+    // COLORED picture: throw the colors away and keep only the SHAPES of the colors.
+    //  1) find the picture's main flat colors (a small palette)
+    //  2) label every pixel with its nearest palette color
+    //  3) clean up 1px slivers that anti-aliased edges create (3x3 majority vote)
+    //  4) draw a line wherever the label changes. One clean line per boundary, no doubling.
+    // Dark areas are not treated as lines here, so dark colored shapes can be colored too.
+    const bins = new Map(), STEP = 3;
+    for (let i = 0; i < n; i += STEP) {
+      const p = i * 4, key = ((src[p] >> 4) << 8) | ((src[p + 1] >> 4) << 4) | (src[p + 2] >> 4);
+      let e = bins.get(key); if (!e) bins.set(key, e = { c: 0, r: 0, g: 0, b: 0 });
+      e.c++; e.r += src[p]; e.g += src[p + 1]; e.b += src[p + 2];
+    }
+    const minCount = (n / STEP) * 0.0006, pal = [];
+    for (const e of [...bins.values()].filter(e => e.c >= minCount).sort((x, y) => y.c - x.c)) {
+      const c = [e.r / e.c, e.g / e.c, e.b / e.c];
+      if (pal.every(q => (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2 + (q[2] - c[2]) ** 2 > 900)) pal.push(c);   // skip near-duplicates
+      if (pal.length >= 32) break;
+    }
+    if (!pal.length) pal.push([255, 255, 255]);
+    const lut = new Int8Array(32768).fill(-1), lab = new Uint8Array(n);       // cache: color -> nearest palette index
+    for (let i = 0; i < n; i++) {
+      const p = i * 4, r = src[p], gr = src[p + 1], b = src[p + 2], key = ((r >> 3) << 10) | ((gr >> 3) << 5) | (b >> 3);
+      let L = lut[key];
+      if (L < 0) {
+        let best = 1e9;
+        for (let j = 0; j < pal.length; j++) { const d = (pal[j][0] - r) ** 2 + (pal[j][1] - gr) ** 2 + (pal[j][2] - b) ** 2; if (d < best) { best = d; L = j; } }
+        lut[key] = L;
+      }
+      lab[i] = L;
+    }
+    const sm = lab.slice(), cnt = new Uint8Array(pal.length);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x, v = lab[i];
+      if (v === lab[i - 1] && v === lab[i + 1] && v === lab[i - w] && v === lab[i + w]) continue;   // clearly inside an area
+      cnt.fill(0);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) cnt[lab[i + dy * w + dx]]++;
+      let max = 0; for (let j = 0; j < cnt.length; j++) if (cnt[j] > max) max = cnt[j];
+      if (cnt[v] === max && cnt.reduce((k, c) => k + (c === max ? 1 : 0), 0) === 1) continue;       // I clearly win: stay
+      for (let j = 0; j < cnt.length; j++) if (cnt[j] === max && j !== v) { sm[i] = j; break; }       // otherwise join a neighbor
+    }
+    const m = new Uint8Array(n);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (x < w - 1 && sm[i] !== sm[i + 1]) m[i] = m[i + 1] = 1;
+      if (y < h - 1 && sm[i] !== sm[i + w]) m[i] = m[i + w] = 1;
+    }
+    wall = dilate(m, w, h, 2);                                  // line thickness, and no gaps for color to leak through
+    for (let i = 0; i < n; i++) if (wall[i]) { line.data[i * 4] = line.data[i * 4 + 1] = line.data[i * 4 + 2] = 34; line.data[i * 4 + 3] = 255; }
+  } else {
+    // Black line art: dark pixels are the lines
+    const wall0 = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const lum = 0.299 * src[i * 4] + 0.587 * src[i * 4 + 1] + 0.114 * src[i * 4 + 2];
+      if (lum < 150) wall0[i] = 1;                                  // dark = wall
+      line.data[i * 4] = line.data[i * 4 + 1] = line.data[i * 4 + 2] = 34;
+      line.data[i * 4 + 3] = Math.min(255, (255 - lum) * 1.4);      // darker = more opaque line
+    }
+    wall = dilate(wall0, w, h, 1);                                  // walls grown 1px so tiny gaps do not leak
+  }
+  const mk = () => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  const R = { w, h, k: w / 800, n: 0, wall,
+              lineCv: mk(), colorCv: mk(), tmp: mk(), display: mk() };
+  R.lineCv.getContext('2d').putImageData(line, 0, 0);
+  R.colorCtx = R.colorCv.getContext('2d'); R.tmpCtx = R.tmp.getContext('2d'); R.dispCtx = R.display.getContext('2d');
+  rasterComposite(R);
+  img.raster.R = R;
+  return R;
+}
+function rasterComposite(R) {               // white paper + colors + lines on top
+  R.dispCtx.fillStyle = '#fff'; R.dispCtx.fillRect(0, 0, R.w, R.h);
+  R.dispCtx.drawImage(R.colorCv, 0, 0); R.dispCtx.drawImage(R.lineCv, 0, 0);
+}
+// Find the open area around (x, y). Returns a 0/1 mask, or null if there is no open area nearby.
+function floodMask(R, x, y) {
+  const { w, h, wall } = R, mask = new Uint8Array(w * h);
+  if (wall[y * w + x]) {                    // tapped right on a line: use the nearest open pixel
+    let found = false;
+    for (let r = 1; r <= 8 && !found; r++)
+      for (let dy = -r; dy <= r && !found; dy++) for (let dx = -r; dx <= r; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < w && ny < h && !wall[ny * w + nx]) { x = nx; y = ny; found = true; break; }
+      }
+    if (!found) return null;
+  }
+  const stack = [x, y];                     // scanline flood fill
+  while (stack.length) {
+    const cy = stack.pop(), cx = stack.pop(), row = cy * w;
+    if (mask[row + cx] || wall[row + cx]) continue;
+    let lx = cx, rx = cx;
+    while (lx > 0 && !wall[row + lx - 1] && !mask[row + lx - 1]) lx--;
+    while (rx < w - 1 && !wall[row + rx + 1] && !mask[row + rx + 1]) rx++;
+    for (let xx = lx; xx <= rx; xx++) mask[row + xx] = 1;
+    for (const yy of [cy - 1, cy + 1]) {
+      if (yy < 0 || yy >= h) continue;
+      let inSpan = false;
+      for (let xx = lx; xx <= rx; xx++) {
+        const j = yy * w + xx, ok = !wall[j] && !mask[j];
+        if (ok && !inSpan) { stack.push(xx, yy); inSpan = true; } else if (!ok) inSpan = false;
+      }
+    }
+  }
+  return mask;
+}
+const patCache = {}, tileCache = {}, urlCache = {};   // pattern objects, their tile canvases, and tile image URLs
+function canvasFill(key, k) {               // solid color, or a sparkle / stripe pattern tile
+  const st = key[0], c = COLORS[+key.slice(1)].h;
+  if (st === 's') return c;
+  const ck = key + '@' + k.toFixed(2);
+  if (patCache[ck]) return patCache[ck];
+  const T = Math.max(8, Math.round((st === 'p' ? 60 : 22) * k)), cv = document.createElement('canvas');
+  cv.width = cv.height = T;
+  const g = cv.getContext('2d');
+  if (st === 'p') {
+    g.fillStyle = c; g.fillRect(0, 0, T, T);
+    g.fillStyle = '#fff'; g.strokeStyle = '#b8c2cc'; g.lineWidth = 1.5 * k;
+    [[14, 16, 11], [42, 34, 14], [18, 50, 7], [52, 8, 6]].forEach(([sx, sy, sr]) => {
+      const x = sx * k, y = sy * k, r = sr * k;
+      g.beginPath(); g.moveTo(x, y - r); g.quadraticCurveTo(x, y, x + r, y); g.quadraticCurveTo(x, y, x, y + r);
+      g.quadraticCurveTo(x, y, x - r, y); g.quadraticCurveTo(x, y, x, y - r); g.closePath(); g.fill(); g.stroke();
+    });
+  } else {                                  // diagonal bands that repeat seamlessly
+    g.fillStyle = '#fff'; g.fillRect(0, 0, T, T); g.fillStyle = c;
+    [0, T].forEach(o => { g.beginPath(); g.moveTo(o, 0); g.lineTo(o + T / 2, 0); g.lineTo(o + T / 2 - 2 * T, 2 * T); g.lineTo(o - 2 * T, 2 * T); g.closePath(); g.fill(); });
+  }
+  tileCache[ck] = cv;
+  return (patCache[ck] = g.createPattern(cv, 'repeat'));
+}
+function rasterApply(R, x, y, key) {        // color the area at (x, y)
+  const mask = floodMask(R, x, y);
+  if (!mask) return false;
+  if (mask[2 * R.w + 2]) R.bgKey = key;      // this area touches the top-left corner: it is the background
+  const d = dilate(mask, R.w, R.h, 2);      // slide the color 2px under the lines so no white halo shows
+  const id = R.tmpCtx.createImageData(R.w, R.h);
+  for (let i = 0; i < d.length; i++) if (d[i]) id.data[i * 4 + 3] = 255;
+  R.tmpCtx.globalCompositeOperation = 'source-over'; R.tmpCtx.putImageData(id, 0, 0);
+  R.tmpCtx.globalCompositeOperation = 'source-in'; R.tmpCtx.fillStyle = canvasFill(key, R.k); R.tmpCtx.fillRect(0, 0, R.w, R.h);
+  R.tmpCtx.globalCompositeOperation = 'source-over';
+  R.colorCtx.drawImage(R.tmp, 0, 0);
+  return true;
+}
+function rasterReplay(R, list) {            // rebuild the colors from the saved list of taps
+  R.colorCtx.clearRect(0, 0, R.w, R.h);
+  R.bgKey = null;
+  list.forEach(([x, y, k]) => rasterApply(R, x, y, k));
+  R.n = list.length;
+  rasterComposite(R);
+}
+// Paint the background behind the whole canvas box too, so it fills the letterbox bars.
+// Solid colors are easy. Sparkle and stripe backgrounds use the same tile as a CSS background,
+// scaled and shifted to line up exactly with the pattern inside the picture.
+function rasterBg(R, cv) {
+  const k = R.bgKey;
+  cv.style.background = '';
+  if (!k) return;
+  cv.style.backgroundColor = COLORS[+k.slice(1)].h;
+  if (k[0] === 's') return;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w) return;                                    // hidden right now; redone when shown or resized
+  const sc = Math.min(w / R.w, h / R.h);
+  canvasFill(k, R.k);
+  const ck = k + '@' + R.k.toFixed(2), T = tileCache[ck].width;
+  urlCache[ck] = urlCache[ck] || tileCache[ck].toDataURL();
+  cv.style.backgroundImage = `url(${urlCache[ck]})`;
+  cv.style.backgroundRepeat = 'repeat';
+  cv.style.backgroundSize = `${T * sc}px ${T * sc}px`;
+  cv.style.backgroundPosition = `${(w - R.w * sc) / 2}px ${(h - R.h * sc) / 2}px`;
+}
+window.addEventListener('resize', () => {            // sizes changed: line the pattern up again
+  const cv = cur && cur.raster && $('art').querySelector('canvas');
+  if (cv && cur.raster.R) rasterBg(cur.raster.R, cv);
+});
+function rasterTap(e) {
+  const R = cur.raster.R, cv = $('art').querySelector('canvas');
+  if (!R || !cv) return;                    // still loading
+  const r = cv.getBoundingClientRect(), sc = Math.min(r.width / R.w, r.height / R.h);   // canvas is letterboxed (object-fit: contain)
+  const x = Math.floor((e.clientX - r.left - (r.width - R.w * sc) / 2) / sc);
+  const y = Math.floor((e.clientY - r.top - (r.height - R.h * sc) / 2) / sc);
+  if (x < 0 || y < 0 || x >= R.w || y >= R.h) return;
+  const p = prog(cur.id); p.rf = p.rf || [];
+  if (R.n !== p.rf.length) rasterReplay(R, p.rf);
+  const key = curStyle + curColor;
+  if (!rasterApply(R, x, y, key)) return;
+  p.rf.push([x, y, key]); R.n++;
+  hist.push({ raster: true, key, added: !p.used.includes(key) });
+  if (!p.used.includes(key)) p.used.push(key);
+  updateUndo(); persist();
+  rasterComposite(R); cv.getContext('2d').drawImage(R.display, 0, 0); rasterBg(R, cv);
+  popSound(curStyle); burst(e.clientX, e.clientY, COLORS[curColor].h);
+}
+
+/* ---------- Drawing a picture into an SVG element ----------
+   Re-applies saved colors. Region ids come from the id attribute if present, else document order. */
+function makeSvg(img, fills) {
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', img.vb);
+  if (img.sw) svg.style.setProperty('--sw', img.sw);   // outline thickness for imported pictures
+  img.nodes.forEach(n => svg.appendChild(document.importNode(n, true)));
+  // Stretch the background rectangle far past the picture, so its color fills the whole viewing area
+  // (the SVG is clipped to its box on screen, so the extra is only seen where the picture is letterboxed)
+  const bg = svg.querySelector('.r');
+  if (bg && bg.localName === 'rect') {
+    const [vx, vy, vw, vh] = img.vb.trim().split(/[\s,]+/).map(Number);
+    if (+bg.getAttribute('width') >= 0.9 * vw && +bg.getAttribute('height') >= 0.9 * vh) {
+      bg.setAttribute('x', vx - 5 * vw); bg.setAttribute('y', vy - 5 * vh);
+      bg.setAttribute('width', 11 * vw); bg.setAttribute('height', 11 * vh);
+    }
+  }
+  svg.querySelectorAll('.r').forEach((el, i) => {
+    const rid = el.getAttribute('id') || ('r' + i);
+    el.removeAttribute('id');            // avoid duplicate ids when the same picture shows twice
+    el.dataset.r = rid;
+    if (fills[rid]) el.style.fill = fillFor(fills[rid], 'a');
+  });
+  return svg;
+}
+
+// One entry point for all views: vector pictures give an SVG, paint-bucket pictures give a canvas
+function makeView(img, p) {
+  if (!img.raster) return makeSvg(img, p.fills || {});
+  const cv = document.createElement('canvas'); cv.width = img.raster.w; cv.height = img.raster.h;
+  const list = p.rf || [];
+  ensureRaster(img).then(R => {
+    if (!R) return;
+    if (R.n !== list.length) rasterReplay(R, list);
+    cv.getContext('2d').drawImage(R.display, 0, 0); rasterBg(R, cv);
+  });
+  return cv;
+}
+
+/* ---------- Screens ---------- */
+function show(name) {
+  ['home', 'paint', 'done'].forEach(s => $(s).classList.toggle('on', s === name));
+}
+
+const CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>';
+
+// Home gallery: one card per picture, showing current progress; green check if finished
+function buildGallery() {
+  const g = $('gallery');
+  g.innerHTML = '';
+  IMAGES.forEach(img => {
+    const p = save[img.id] || { fills: {} };
+    const b = document.createElement('button');
+    b.className = 'card';
+    b.setAttribute('aria-label', 'Color this picture');
+    b.appendChild(makeView(img, p));
+    if (p.done) b.insertAdjacentHTML('beforeend', `<div class="badge">${CHECK}</div>`);
+    b.onclick = () => openImage(img);
+    g.appendChild(b);
+  });
+}
+
+/* ---------- Paint screen ---------- */
+let cur = null;          // picture being colored
+let curStyle = 's';      // s = solid, p = sparkle, t = stripes
+let curColor = 0;        // index into COLORS
+let hist = [];           // undo stack for this visit: { rid, prev, key, added }
+
+function updateUndo() { $('undoBtn').disabled = !hist.length; }
+
+function openImage(img) {
+  cur = img;
+  hist = []; updateUndo();
+  $('art').replaceChildren(makeView(img, prog(img.id)));
+  renderTools();
+  show('paint');
+}
+
+// Left dots show the chosen color in each style; bottom palette shows all colors in the chosen style
+function renderTools() {
+  $('cats').innerHTML = ['s', 'p', 't'].map(st =>
+    `<button class="dot ${st === curStyle ? 'active' : ''}" data-st="${st}" aria-label="Style">${swatchSVG(st + curColor)}</button>`).join('');
+  $('pal').innerHTML = COLORS.map((c, i) =>
+    `<button class="sw ${i === curColor ? 'active' : ''}" data-i="${i}" aria-label="${c.n}">${swatchSVG(curStyle + i)}</button>`).join('');
+}
+$('cats').addEventListener('click', e => {
+  const b = e.target.closest('.dot'); if (!b) return;
+  curStyle = b.dataset.st; renderTools();
+  popSound(curStyle);
+});
+$('pal').addEventListener('click', e => {
+  const b = e.target.closest('.sw'); if (!b) return;
+  curColor = +b.dataset.i; renderTools();
+  popSound(curStyle);
+});
+
+// Tap a shape: fill it, remember it. pointerdown (not click) so it feels instant for little fingers.
+$('art').addEventListener('pointerdown', e => {
+  if (!cur) return;
+  if (cur.raster) { rasterTap(e); return; }
+  const el = e.target.closest && e.target.closest('.r');
+  if (!el) return;
+  const key = curStyle + curColor, p = prog(cur.id), rid = el.dataset.r, prev = p.fills[rid] || null;
+  if (prev !== key) {                            // remember how to undo this tap
+    hist.push({ rid, prev, key, added: !p.used.includes(key) });
+    if (hist.length > 300) hist.shift();
+    updateUndo();
+  }
+  el.style.fill = fillFor(key, 'a');
+  p.fills[rid] = key;
+  if (!p.used.includes(key)) p.used.push(key);   // order colors were first used
+  persist();
+  el.classList.remove('pop'); void el.getBoundingClientRect(); el.classList.add('pop');
+  popSound(curStyle);
+  burst(e.clientX, e.clientY, COLORS[curColor].h);
+});
+
+// Undo: put the last tapped shape back to what it was before
+$('undoBtn').onclick = () => {
+  if (!cur || !hist.length) return;
+  const h = hist.pop(), p = prog(cur.id);
+  if (h.raster) {                                   // paint-bucket picture: drop the last tap and rebuild
+    p.rf.pop();
+    if (h.added) { const i = p.used.lastIndexOf(h.key); if (i > -1) p.used.splice(i, 1); }
+    const R = cur.raster.R, cv = $('art').querySelector('canvas');
+    if (R) { rasterReplay(R, p.rf); if (cv) { cv.getContext('2d').drawImage(R.display, 0, 0); rasterBg(R, cv); } }
+    persist(); updateUndo(); popSound('s');
+    return;
+  }
+  const el = $('art').querySelector(`[data-r="${CSS.escape(h.rid)}"]`);
+  if (h.prev) { p.fills[h.rid] = h.prev; if (el) el.style.fill = fillFor(h.prev, 'a'); }
+  else        { delete p.fills[h.rid];   if (el) el.style.removeProperty('fill'); }
+  if (h.added) { const i = p.used.lastIndexOf(h.key); if (i > -1) p.used.splice(i, 1); }   // un-use the color too
+  persist(); updateUndo(); popSound('s');
+};
+
+/* ---------- Done screen ---------- */
+function showDone() {
+  const p = prog(cur.id);
+  p.done = true; persist();
+  $('doneArt').replaceChildren(makeView(cur, p));
+  $('order').innerHTML = p.used.map((k, i) => `<div class="ord"><b>${i + 1}</b>${swatchSVG(k)}</div>`).join('');
+  show('done');
+  tada(); confetti();
+}
+$('doneBtn').onclick = showDone;
+$('homeBtn').onclick = () => { buildGallery(); show('home'); };
+$('doneHome').onclick = () => { buildGallery(); show('home'); };
+$('keepBtn').onclick = () => openImage(cur);
+
+/* ---------- Hold-to-reset ----------
+   Press and hold the reset button ~1.2s (the CSS animation ends) to wipe this picture.
+   Releasing early cancels. A quick tap shows a hint so grown-ups learn how it works. */
+const resetBtn = $('resetBtn'), resetProg = resetBtn.querySelector('.prog');
+let holdStart = 0, hintTimer = 0;
+function endHold() {
+  resetBtn.classList.remove('holding');
+  if (holdStart && Date.now() - holdStart < 400) {          // short tap: explain the gesture
+    $('hint').classList.add('on');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => $('hint').classList.remove('on'), 1600);
+  }
+  holdStart = 0;
+}
+resetBtn.addEventListener('pointerdown', () => { holdStart = Date.now(); resetBtn.classList.add('holding'); });
+['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => resetBtn.addEventListener(ev, endHold));
+resetBtn.addEventListener('contextmenu', e => e.preventDefault());   // no long-press menu
+resetProg.addEventListener('animationend', () => {                   // held long enough: do the reset
+  holdStart = 0;
+  resetBtn.classList.remove('holding');
+  if (!cur) return;
+  delete save[cur.id]; persist();
+  hist = []; updateUndo();
+  $('art').replaceChildren(makeView(cur, { fills: {}, rf: [] }));
+});
+
+/* ---------- Settings ---------- */
+$('ver').textContent = VERSION;
+$('gearBtn').onclick = () => $('settings').classList.add('on');
+/* ---------- Add pictures from files (no server needed) ----------
+   Picks .svg files from the device, checks they look right, and keeps the SVG text in localStorage
+   so they come back next time. They live in this browser only. */
+const CUSTOM_KEY = 'colorgame.custom';
+let custom = [];
+try { custom = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]'); } catch (e) { custom = []; }
+const saveCustom = () => { try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(custom)); return true; } catch (e) { return false; } };
+
+$('addBtn').onclick = () => $('fileIn').click();
+$('fileIn').onchange = async e => {
+  let added = 0, bad = 0, dup = 0;
+  for (const f of e.target.files) {
+    const text = await f.text();
+    if (custom.some(c => c.text === text)) { dup++; continue; }     // same file picked twice
+    const id = 'c' + Date.now() + '_' + custom.length;
+    // must be a real SVG; ordinary ones are converted automatically
+    if (addImage(id, text)) {
+      custom.push({ id, text }); added++;
+    } else {
+      if (IMAGES.length && IMAGES[IMAGES.length - 1].id === id) IMAGES.pop();
+      bad++;
+    }
+  }
+  e.target.value = '';
+  const saved = saveCustom();
+  buildGallery();
+  $('addMsg').textContent = `Added ${added}` + (dup ? `, skipped ${dup} already added` : '') + (bad ? `, ${bad} not usable` : '') +
+    (added && !saved ? '. This browser would not save them.' : '.');
+};
+$('removeBtn').onclick = () => {
+  if (!custom.length) { $('addMsg').textContent = 'No added pictures.'; return; }
+  if (!confirm('Remove all pictures you added, and their coloring?')) return;
+  custom.forEach(c => { const i = IMAGES.findIndex(im => im.id === c.id); if (i > -1) IMAGES.splice(i, 1); delete save[c.id]; });
+  custom = []; saveCustom(); persist(); buildGallery();
+  $('addMsg').textContent = 'Removed.';
+};
+
+// Sound toggle (grown-ups only; kept inside settings)
+function syncOptButtons() {
+  $('soundBtn').textContent = 'Sound: ' + (opts.sound ? 'On' : 'Off');
+}
+$('soundBtn').onclick = () => { opts.sound = !opts.sound; saveOpts(); syncOptButtons(); popSound('s'); };
+syncOptButtons();
+$('closeSet').onclick =() => $('settings').classList.remove('on');
+$('eraseBtn').onclick = () => {
+  if (confirm('Erase all coloring? This cannot be undone.')) { save = {}; persist(); buildGallery(); $('settings').classList.remove('on'); }
+};
+
+/* ---------- PIN lock ----------
+   Only a scrambled (hashed) copy of the PIN is stored here, not the PIN itself. The scramble is
+   SHA-256 with a salt, repeated 5000 times so guessing is slower. This keeps casual people out.
+   It is NOT real security: the page is on the viewer's device, so someone who knows how to edit
+   the page or its browser storage can get around it. Unlocking lasts until the tab/app is closed.
+   To change the PIN, hash a new one the same way (pinHash) and replace PIN_HASH. */
+const SHA_K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+function sha256hex(str) {
+  const bytes = [];
+  const raw = unescape(encodeURIComponent(str));          // text to UTF-8 bytes
+  for (let i = 0; i < raw.length; i++) bytes.push(raw.charCodeAt(i));
+  const len = bytes.length;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const hi = Math.floor(len * 8 / 4294967296), lo = (len * 8) >>> 0;
+  bytes.push((hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255, (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255);
+  let H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const w = new Uint32Array(64);
+  for (let o = 0; o < bytes.length; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = (bytes[o + 4 * i] << 24) | (bytes[o + 4 * i + 1] << 16) | (bytes[o + 4 * i + 2] << 8) | bytes[o + 4 * i + 3];
+    for (let i = 16; i < 64; i++) {
+      const a = w[i - 15], b = w[i - 2];
+      const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
+      const s1 = ((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + SHA_K[i] + w[i]) >>> 0;
+      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H = [(H[0] + a) >>> 0, (H[1] + b) >>> 0, (H[2] + c) >>> 0, (H[3] + d) >>> 0, (H[4] + e) >>> 0, (H[5] + f) >>> 0, (H[6] + g) >>> 0, (H[7] + h) >>> 0];
+  }
+  return H.map(x => x.toString(16).padStart(8, '0')).join('');
+}
+const PIN_SALT = 'cg-7f3a91c2e8b4', PIN_ROUNDS = 5000;
+const PIN_HASH = 'be18c0a69d254fb6fbab7cd178f422527f3826f1e3d9dd16e07c983b070e13dd';
+function pinHash(pin) {
+  let h = sha256hex(PIN_SALT + pin);
+  for (let i = 1; i < PIN_ROUNDS; i++) h = sha256hex(h + PIN_SALT);
+  return h;
+}
+(function setupLock() {
+  const UNLOCK_KEY = 'colorgame.unlocked';
+  try { if (sessionStorage.getItem(UNLOCK_KEY) === '1') { $('lock').classList.add('off'); return; } } catch (e) {}
+  let pin = '', wrong = 0, locked = false;
+  const dots = [...document.querySelectorAll('#pinDots i')];
+  const draw = () => dots.forEach((d, i) => d.classList.toggle('on', i < pin.length));
+  function press(d) {
+    if (locked) return;
+    if (d === 'x') pin = pin.slice(0, -1);
+    else if (pin.length < 4) pin += d;
+    draw();
+    $('pinMsg').textContent = '';
+    if (pin.length < 4) return;
+    setTimeout(() => {                                   // tiny delay so the 4th dot shows first
+      if (pinHash(pin) === PIN_HASH) {
+        try { sessionStorage.setItem(UNLOCK_KEY, '1'); } catch (e) {}
+        $('lock').classList.add('off');
+        return;
+      }
+      wrong++; pin = ''; draw();
+      $('pinDots').classList.remove('shake'); void $('pinDots').offsetWidth; $('pinDots').classList.add('shake');
+      if (wrong % 5 === 0) {                              // 5 misses in a row: wait 30 seconds
+        locked = true; let left = 30;
+        document.querySelectorAll('#pad button').forEach(b => b.disabled = true);
+        const t = setInterval(() => {
+          $('pinMsg').textContent = `Try again in ${left}s`;
+          if (left-- <= 0) { clearInterval(t); locked = false; $('pinMsg').textContent = ''; document.querySelectorAll('#pad button').forEach(b => b.disabled = false); }
+        }, 1000);
+      } else $('pinMsg').textContent = 'Wrong PIN';
+    }, 120);
+  }
+  $('pad').addEventListener('click', e => { const b = e.target.closest('button'); if (b) press(b.dataset.d); });
+  document.addEventListener('keydown', e => {            // laptop keyboard works too
+    if ($('lock').classList.contains('off')) return;
+    if (/^[0-9]$/.test(e.key)) press(e.key); else if (e.key === 'Backspace') press('x');
+  });
+})();
+
+/* ---------- Start ---------- */
+buildDefs();
+addImage('dog', wrapSVG(DOG_SVG));
+addImage('house', wrapSVG(HOUSE_SVG));
+addImage('fish', wrapSVG(FISH_SVG));
+addImage('car', wrapSVG(CAR_SVG));
+custom.forEach(c => addImage(c.id, c.text));   // pictures added through Settings (saved in this browser)
+buildGallery();
+loadExternal();
+</script>
+</body>
+</html>
