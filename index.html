@@ -223,7 +223,7 @@
    =================================================================== */
 
 // Bump on every code change (CalVer with daily build number)
-const VERSION = 'v2026.11.01.17';
+const VERSION = 'v2026.11.01.20';
 const NS = 'http://www.w3.org/2000/svg';
 const $ = id => document.getElementById(id);
 
@@ -234,8 +234,26 @@ const COLORS = [
   { n:'Red',    h:'#e63946' }, { n:'Orange', h:'#ff9f1c' }, { n:'Yellow', h:'#ffd60a' },
   { n:'Green',  h:'#38b000' }, { n:'Sky',    h:'#4cc9f0' }, { n:'Blue',   h:'#2f5bea' },
   { n:'Purple', h:'#9d4edd' }, { n:'Pink',   h:'#ff7eb6' }, { n:'Brown',  h:'#8d5a3b' },
-  { n:'Black',  h:'#222222' }
+  { n:'Black',  h:'#222222' },
+  { n:'Grey',   h:'#9aa0a6' },
+  { n:'White',  h:'#ffffff', t:'#d3d8de' }    // t = stripe color (white stripes on white would be invisible)
 ];
+const RAND = -1;
+// Styles: s = solid, p = sparkle, t = stripes, h = shades (solid that gets lighter with each tap)   // "random" palette button: every tap picks a different color
+
+/* Shades: in solid mode, each tap on the same chosen color is a lighter version of it.
+   A shaded key looks like "s5_3" (blue, 3 steps lighter). Step 0 is the pure color, the last step is white. */
+const SHADE_STEP = 0.02, SHADE_MAX = 50;   // 50 taps, each about 2% lighter; the last one is white
+const ci = key => parseInt(key.slice(1), 10);            // color index inside a key ("s5_3" -> 5)
+const ukey = key => key.replace(/_\d+$/, '');            // base key without the shade ("s5_3" -> "s5")
+function mixWhite(hex, f) {                              // blend a color toward white by fraction f (0..1)
+  const n = parseInt(hex.slice(1), 16), ch = sh => Math.round(((n >> sh) & 255) * (1 - f) + 255 * f);
+  return '#' + [16, 8, 0].map(sh => ch(sh).toString(16).padStart(2, '0')).join('');
+}
+function hexOf(key) {                                    // the actual solid color of a key, shade included
+  const base = COLORS[ci(key)].h, m = /_(\d+)$/.exec(key);
+  return m ? mixWhite(base, +m[1] >= SHADE_MAX ? 1 : +m[1] * SHADE_STEP) : base;
+}
 
 /* Build the sparkle and stripe patterns once. Two sets:
    "a" = for the pictures (big tiles), "w" = for the small swatch dots (small tiles). */
@@ -254,7 +272,7 @@ function buildDefs() {
       // Stripes: diagonal color + white bands
       const ST = 22 * s;   // stripe tile: small = thin stripes, many per shape
       h += `<pattern id="${set}-t-${i}" width="${ST}" height="${ST}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-              <rect width="${ST}" height="${ST}" fill="#fff"/><rect width="${ST}" height="${ST / 2}" fill="${c.h}"/></pattern>`;
+              <rect width="${ST}" height="${ST}" fill="#fff"/><rect width="${ST}" height="${ST / 2}" fill="${c.t || c.h}"/></pattern>`;
     });
   });
   $('defs').innerHTML = h;
@@ -281,12 +299,25 @@ function startShimmer() {
 
 // Turn a color key into a CSS fill value. set = 'a' (pictures) or 'w' (swatches)
 function fillFor(key, set) {
-  const i = +key.slice(1), st = key[0];
-  return st === 's' ? COLORS[i].h : `url(#${set}-${st}-${i})`;
+  const i = ci(key), st = key[0];
+  return st === 's' ? hexOf(key) : `url(#${set}-${st}-${i})`;
 }
 // Small round swatch used for dots, palette and the "color order" row
 const swatchSVG = key =>
   `<svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="35" fill="${fillFor(key, 'w')}" stroke="#222" stroke-width="4"/></svg>`;
+// The "random" swatch: a rainbow pie (alternating white wedges for stripes, a few stars for sparkle)
+function randSwatch(st) {
+  const cols = COLORS.filter(c => c.h !== '#ffffff').map(c => c.h), per = st === 't' ? 2 : 1, n = cols.length * per;
+  let w = '';
+  for (let i = 0; i < n; i++) {
+    const a0 = i / n * 2 * Math.PI - Math.PI / 2, a1 = (i + 1) / n * 2 * Math.PI - Math.PI / 2;
+    const pt = a => `${(40 + 35 * Math.cos(a)).toFixed(1)},${(40 + 35 * Math.sin(a)).toFixed(1)}`;
+    w += `<path d="M40,40 L${pt(a0)} A35,35 0 0 1 ${pt(a1)} Z" fill="${per === 2 && i % 2 ? '#fff' : cols[Math.floor(i / per)]}"/>`;
+  }
+  const star = (x, y, r) => `<path d="M${x},${y - r}Q${x},${y} ${x + r},${y}Q${x},${y} ${x},${y + r}Q${x},${y} ${x - r},${y}Q${x},${y} ${x},${y - r}Z" fill="#fff" stroke="#b8c2cc" stroke-width="1"/>`;
+  const extra = st === 'h' ? '<circle cx="40" cy="40" r="16" fill="#fff" opacity=".6"/>' : st === 'p' ? star(28, 30, 9) + star(52, 46, 11) + star(34, 56, 6) : '';
+  return `<svg viewBox="0 0 80 80">${w}${extra}<circle cx="40" cy="40" r="35" fill="none" stroke="#222" stroke-width="4"/></svg>`;
+}
 
 /* ---------- Built-in pictures (viewBox 0 0 800 600) ----------
    Shapes are listed back to front. Later shapes sit on top of earlier ones. */
@@ -680,11 +711,11 @@ function burst(x, y, color) {             // little stars fly out from the tap p
   }
 }
 function confetti() {                      // colored pieces rain down on the done screen
-  const fx = $('fx');
+  const fx = $('fx'), cols = COLORS.filter(c => c.h !== '#ffffff');
   for (let i = 0; i < 70; i++) {
     const c = document.createElement('div');
     c.className = 'conf';
-    c.style.cssText = `left:${Math.random() * 100}%;background:${COLORS[i % COLORS.length].h};` +
+    c.style.cssText = `left:${Math.random() * 100}%;background:${cols[i % cols.length].h};` +
       `animation-duration:${2.2 + Math.random() * 1.8}s;animation-delay:${Math.random() * 0.8}s`;
     fx.appendChild(c);
     setTimeout(() => c.remove(), 5200);
@@ -840,8 +871,8 @@ function floodMask(R, x, y) {
 }
 const patCache = {}, tileCache = {}, urlCache = {};   // pattern objects, their tile canvases, and tile image URLs
 function canvasFill(key, k) {               // solid color, or a sparkle / stripe pattern tile
-  const st = key[0], c = COLORS[+key.slice(1)].h;
-  if (st === 's') return c;
+  const st = key[0], c = COLORS[ci(key)].h;
+  if (st === 's') return hexOf(key);
   const ck = key + '@' + k.toFixed(2);
   if (patCache[ck]) return patCache[ck];
   const T = Math.max(8, Math.round((st === 'p' ? 60 : 22) * k)), cv = document.createElement('canvas');
@@ -856,7 +887,7 @@ function canvasFill(key, k) {               // solid color, or a sparkle / strip
       g.quadraticCurveTo(x, y, x - r, y); g.quadraticCurveTo(x, y, x, y - r); g.closePath(); g.fill(); g.stroke();
     });
   } else {                                  // diagonal bands that repeat seamlessly
-    g.fillStyle = '#fff'; g.fillRect(0, 0, T, T); g.fillStyle = c;
+    g.fillStyle = '#fff'; g.fillRect(0, 0, T, T); g.fillStyle = COLORS[ci(key)].t || c;
     [0, T].forEach(o => { g.beginPath(); g.moveTo(o, 0); g.lineTo(o + T / 2, 0); g.lineTo(o + T / 2 - 2 * T, 2 * T); g.lineTo(o - 2 * T, 2 * T); g.closePath(); g.fill(); });
   }
   tileCache[ck] = cv;
@@ -896,7 +927,7 @@ function rasterBg(R, cv) {
   const k = R.bgKey;
   cv.style.background = '';
   if (!k) return;
-  cv.style.backgroundColor = COLORS[+k.slice(1)].h;
+  cv.style.backgroundColor = hexOf(k);
   if (k[0] === 's') return;
   const w = cv.clientWidth, h = cv.clientHeight;
   if (!w) return;                                    // hidden right now; redone when shown or resized
@@ -922,14 +953,15 @@ function rasterTap(e) {
   if (x < 0 || y < 0 || x >= R.w || y >= R.h) return;
   const p = prog(cur.id); p.rf = p.rf || [];
   if (R.n !== p.rf.length) rasterReplay(R, p.rf);
-  const key = curStyle + curColor;
+  const key = nextKey(), uk = ukey(key), sn = shadeN;
   if (!rasterApply(R, x, y, key)) return;
   p.rf.push([x, y, key]); R.n++;
-  hist.push({ raster: true, key, added: !p.used.includes(key) });
-  if (!p.used.includes(key)) p.used.push(key);
+  hist.push({ raster: true, key: uk, sn, added: !p.used.includes(uk) });
+  if (!p.used.includes(uk)) p.used.push(uk);       // color order lists the base color once, not every shade
+  bumpShade();
   updateUndo(); persist();
   rasterComposite(R); cv.getContext('2d').drawImage(R.display, 0, 0); rasterBg(R, cv);
-  popSound(curStyle); burst(e.clientX, e.clientY, COLORS[curColor].h);
+  popSound(curStyle); burst(e.clientX, e.clientY, hexOf(key));
 }
 
 /* ---------- Drawing a picture into an SVG element ----------
@@ -1042,8 +1074,23 @@ function buildGallery() {
 
 /* ---------- Paint screen ---------- */
 let cur = null;          // picture being colored
-let curStyle = 's';      // s = solid, p = sparkle, t = stripes
-let curColor = 0;        // index into COLORS
+let curStyle = 's';      // s = solid, p = sparkle, t = stripes, h = shades
+let curColor = 0;        // index into COLORS, or RAND for the random button
+let shadeN = 0;          // how many lighter steps the next solid tap uses (resets when a color is picked)
+let lastRand = -1;
+// Work out the color key for this tap (random color, shade step, or plain)
+function nextKey() {
+  if (curColor === RAND) {                           // random: any color except white, never the same twice in a row
+    const ok = COLORS.map((c, i) => i).filter(i => COLORS[i].h !== '#ffffff' && i !== lastRand);
+    lastRand = ok[Math.floor(Math.random() * ok.length)];
+    return (curStyle === 'h' ? 's' : curStyle) + lastRand;
+  }
+  if (curStyle === 'h') return shadeN > 0 && COLORS[curColor].h !== '#ffffff' ? `s${curColor}_${shadeN}` : 's' + curColor;
+  return curStyle + curColor;
+}
+function bumpShade() {                               // after a solid tap, the next one is a step lighter
+  if (curStyle === 'h' && curColor !== RAND && COLORS[curColor].h !== '#ffffff' && shadeN < SHADE_MAX) shadeN++;
+}
 let hist = [];           // undo stack for this visit: { rid, prev, key, added }
 
 function updateUndo() { $('undoBtn').disabled = !hist.length; }
@@ -1054,7 +1101,7 @@ function openImage(img) {
   ensureLoaded(img).then(ok => {
     if (!ok) return;
     if (cur && cur !== img) releaseRaster(cur);
-    cur = img;
+    cur = img; shadeN = 0;
     hist = []; updateUndo();
     $('art').replaceChildren(makeView(img, prog(img.id)));
     renderTools();
@@ -1070,20 +1117,32 @@ function goHome() {
 }
 
 // Left dots show the chosen color in each style; bottom palette shows all colors in the chosen style
+// The shades dot: rings from the pure color to nearly white, so it reads as "gets lighter"
+function shadeSwatch(i) {
+  const rings = [[35, 0], [29, 10], [23, 20], [17, 30], [11, 40]].map(([r, n]) =>
+    `<circle cx="40" cy="40" r="${r}" fill="${COLORS[i].h === '#ffffff' ? '#e6e9ec' : hexOf('s' + i + '_' + n)}"/>`).join('');
+  return `<svg viewBox="0 0 80 80">${rings}<circle cx="40" cy="40" r="35" fill="none" stroke="#222" stroke-width="4"/></svg>`;
+}
+function renderCats() {      // the four style dots on the left
+  $('cats').innerHTML = ['s', 'p', 't', 'h'].map(st =>
+    `<button class="dot ${st === curStyle ? 'active' : ''}" data-st="${st}" aria-label="${st === 'h' ? 'Shades' : 'Style'}">${
+      curColor === RAND ? randSwatch(st)
+        : st === 'h' ? shadeSwatch(curColor) : swatchSVG(st + curColor)}</button>`).join('');
+}
 function renderTools() {
-  $('cats').innerHTML = ['s', 'p', 't'].map(st =>
-    `<button class="dot ${st === curStyle ? 'active' : ''}" data-st="${st}" aria-label="Style">${swatchSVG(st + curColor)}</button>`).join('');
+  renderCats();
   $('pal').innerHTML = COLORS.map((c, i) =>
-    `<button class="sw ${i === curColor ? 'active' : ''}" data-i="${i}" aria-label="${c.n}">${swatchSVG(curStyle + i)}</button>`).join('');
+    `<button class="sw ${i === curColor ? 'active' : ''}" data-i="${i}" aria-label="${c.n}">${swatchSVG((curStyle === 'h' ? 's' : curStyle) + i)}</button>`).join('') +
+    `<button class="sw ${curColor === RAND ? 'active' : ''}" data-i="${RAND}" aria-label="Random">${randSwatch(curStyle === 'h' ? 's' : curStyle)}</button>`;
 }
 $('cats').addEventListener('click', e => {
   const b = e.target.closest('.dot'); if (!b) return;
-  curStyle = b.dataset.st; renderTools();
+  curStyle = b.dataset.st; shadeN = 0; renderTools();
   popSound(curStyle);
 });
 $('pal').addEventListener('click', e => {
   const b = e.target.closest('.sw'); if (!b) return;
-  curColor = +b.dataset.i; renderTools();
+  curColor = +b.dataset.i; shadeN = 0; renderTools();
   popSound(curStyle);
 });
 
@@ -1093,25 +1152,27 @@ $('art').addEventListener('pointerdown', e => {
   if (cur.raster) { rasterTap(e); return; }
   const el = e.target.closest && e.target.closest('.r');
   if (!el) return;
-  const key = curStyle + curColor, p = prog(cur.id), rid = el.dataset.r, prev = p.fills[rid] || null;
+  const key = nextKey(), uk = ukey(key), sn = shadeN, p = prog(cur.id), rid = el.dataset.r, prev = p.fills[rid] || null;
   if (prev !== key) {                            // remember how to undo this tap
-    hist.push({ rid, prev, key, added: !p.used.includes(key) });
+    hist.push({ rid, prev, key: uk, sn, added: !p.used.includes(uk) });
     if (hist.length > 300) hist.shift();
     updateUndo();
   }
   el.style.fill = fillFor(key, 'a');
   p.fills[rid] = key;
-  if (!p.used.includes(key)) p.used.push(key);   // order colors were first used
+  if (!p.used.includes(uk)) p.used.push(uk);     // order colors were first used (base color, shades not listed)
+  bumpShade();
   persist();
   el.classList.remove('pop'); void el.getBoundingClientRect(); el.classList.add('pop');
   popSound(curStyle);
-  burst(e.clientX, e.clientY, COLORS[curColor].h);
+  burst(e.clientX, e.clientY, hexOf(key));
 });
 
 // Undo: put the last tapped shape back to what it was before
 $('undoBtn').onclick = () => {
   if (!cur || !hist.length) return;
   const h = hist.pop(), p = prog(cur.id);
+  if (h.sn !== undefined && curColor !== RAND) { shadeN = h.sn; renderCats(); }   // next tap repeats the shade just undone
   if (h.raster) {                                   // paint-bucket picture: drop the last tap and rebuild
     p.rf.pop();
     if (h.added) { const i = p.used.lastIndexOf(h.key); if (i > -1) p.used.splice(i, 1); }
